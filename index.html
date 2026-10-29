@@ -75,6 +75,7 @@
     <a href="#A">A · Finest grid everywhere</a>
     <a href="#B">B · Coarsest grid everywhere</a>
     <a href="#C">C · Blocks + halo</a>
+    <a href="#stack">Stacking layers</a>
     <a href="#G">D · One image per level</a>
     <a href="#E">E · Look up each neighbour</a>
     <a href="#D">F · Graph (GNN)</a>
@@ -154,6 +155,41 @@
           <li>The halo map is custom code: one gather per layer.</li>
           <li>The kernel reaches 1 cell, so 1 m in a fine block and 4 m in a coarse one. Reach over distance comes from coarse U-Net levels, not from this layer.</li>
         </ul>
+      </div>
+    </div>
+  </section>
+
+  <section id="stack">
+    <h2>Stacking layers: convolutions of convolutions</h2>
+    <p>One layer reads 1 cell in each direction. Stacking layers repeats that, and the halo is <b>refreshed before every layer</b> from the neighbouring blocks' <i>current</i> features, not from the raw input. Information therefore crosses a block edge one cell per layer, and the "average if finer, copy if coarser" rule is applied to features at every layer.</p>
+    <h3>1D cross-section: what a cell depends on through the layers</h3>
+    <div id="fig-cone"></div>
+    <div class="legend" style="margin-top:6px">
+      <span><i class="sw" style="border-color:var(--same)"></i>reads a same-size cell</span>
+      <span><i class="sw" style="border-color:var(--finer)"></i>reads the average of smaller cells</span>
+      <span><i class="sw" style="border-color:var(--coarser)"></i>reads a copy of a bigger cell</span>
+    </div>
+    <p class="hint" id="cone-info"></p>
+    <p>Hover over any cell. Each row is one layer's output, computed from three positions in the row below. The highlighted cone is everything in the input (bottom row) that can influence that cell. The cone is a fixed number of cells wide on each side, so in metres it is <b>lopsided</b>: it reaches further on the side where cells are big.</p>
+
+    <h3>2D: how far a cell sees after <i>L</i> layers</h3>
+    <div class="row">
+      <div class="figcol"><div id="fig-rf"></div><div class="hint">Hover over a cell. Shading shows which layer first brings each input cell into view (darker = later). The dashed square is what the same number of layers covers on a uniform 1 m grid (approach A).</div></div>
+      <div class="txtcol">
+        <p>Layers <i>L</i> = <b id="rf-l">3</b> <input type="range" id="rf-range" min="1" max="8" step="1" value="3"></p>
+        <div class="stats" id="rf-stats"></div>
+        <h3>What this means</h3>
+        <ul>
+          <li>Reach per layer is one <i>local</i> cell: 1 m among the 1 m cells and 4 m among the 4 m cells. FDS chose small cells where things change fast, so the network looks closer exactly where detail matters.</li>
+          <li>Crossing into a bigger-cell region, reach in metres grows faster. Crossing into a smaller-cell region, the averaged halo hands over a summary of several small cells at once.</li>
+          <li>Plain average and copy are fixed rules. Since features are not physical quantities, they can be swapped for <b>learned</b> transfers: a stride-2 conv from fine to coarse and a transposed conv from coarse to fine. That costs a few weights per size pair, and the conservation step (refluxing) is unchanged.</li>
+          <li>Going 25 m in one 0.5 s step would take 25 layers among 1 m cells. That is what the coarse U-Net levels are for: pool to 4 m and 16 m grids, take a few layers there, and bring the result back.</li>
+        </ul>
+        <h3>One layer, in code</h3>
+        <pre style="font-size:12.5px;background:#f6f7f8;padding:10px 12px;border-radius:6px;overflow:auto;margin:6px 0">for layer in layers:
+    halo = gather(features, halo_map)  # copy or average
+    x = pad_with(features, halo)       # (n_blocks, C, 6, 6)
+    features = act(norm(conv(x)))     # one batched conv</pre>
       </div>
     </div>
   </section>
@@ -452,6 +488,90 @@ function haloOf(b) {
     const t = el('text', { x: 158, y: 30, 'font-size': 13, fill: '#1f2328' }, side); t.textContent = `Block ${b.id + 1} as a tensor`;
     [['6 × 6 values (4 × 4 + halo)', 52], [`extra channel: cell size = ${b.s} m`, 72], ['same conv weights for', 100], ['every block, every size', 118]].forEach(([s, yy]) => { const e = el('text', { x: 158, y: yy, 'font-size': 12, fill: '#5b6470' }, side); e.textContent = s; });
   }, DEFAULT);
+}
+
+// ---------- stacking layers: 1D cone ----------
+{
+  const row = [];
+  const seg = (a, b, s) => { for (let x = a; x < b; x += s) row.push({ x0: x, s }); };
+  seg(0, 8, 4); seg(8, 16, 2); seg(16, 24, 1); seg(24, 32, 2); seg(32, 40, 4);
+  const LEN = 40, NL = 5, U = 24, RH = 54, PADX = 12, PADY = 26;
+  const at = x => row.findIndex(c => x >= c.x0 && x < c.x0 + c.s);
+  const deps = i => {           // index -> kind, for one layer's 3-tap kernel
+    const c = row[i], out = new Map();
+    for (const d of [-1, 0, 1]) {
+      const px = c.x0 + c.s / 2 + d * c.s; if (px < 0 || px >= LEN) continue;
+      const t = row[at(px)];
+      if (t.s >= c.s) out.set(at(px), t.s === c.s ? 'same' : 'coarser');
+      else for (let x = px - c.s / 2 + .5; x < px + c.s / 2; x++) out.set(at(x), 'finer');
+    }
+    return out;
+  };
+  console.assert(deps(at(7)).size === 4 && deps(at(16.5)).get(at(15)) === 'coarser', '1D deps');
+  const W = LEN * U + 2 * PADX, H = NL * RH + PADY + 10;
+  const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, class: 'side', style: 'width:100%;max-width:' + W + 'px;cursor:crosshair' }, document.getElementById('fig-cone'));
+  const base = el('g', {}, svg), over = el('g', {}, svg);
+  const yOf = l => PADY + (NL - 1 - l) * RH;           // layer 0 at the bottom
+  const box = (i, l) => ({ x: PADX + row[i].x0 * U + 2, y: yOf(l), w: row[i].s * U - 4, h: 22 });
+  const shade = { 4: '#c9ced6', 2: '#9aa3b0', 1: '#5b6470' };
+  for (let l = 0; l < NL; l++) {
+    const t = el('text', { x: 2, y: yOf(l) - 6, 'font-size': 11, fill: '#5b6470' }, base); t.textContent = l === 0 ? 'input' : `layer ${l}`;
+    row.forEach((c, i) => { const b = box(i, l); el('rect', { x: b.x, y: b.y, width: b.w, height: b.h, rx: 3, fill: shade[c.s], 'data-i': i, 'data-l': l }, base); });
+    if (l > 0) row.forEach((c, i) => { for (const [j] of deps(i)) { const a = box(i, l), b = box(j, l - 1); el('line', { x1: a.x + a.w / 2, y1: a.y + a.h, x2: b.x + b.w / 2, y2: b.y, stroke: 'rgba(0,0,0,.09)', 'stroke-width': 1 }, base); } });
+  }
+  [['4 m cells', 4], ['2 m', 12], ['1 m', 20], ['2 m', 28], ['4 m cells', 36]].forEach(([s, x]) => { const t = el('text', { x: PADX + x * U, y: 14, 'text-anchor': 'middle', 'font-size': 12, fill: '#1f2328' }, base); t.textContent = s; });
+  const draw = (i0, l0) => {
+    over.replaceChildren();
+    let cur = new Set([i0]);
+    for (let l = l0; l > 0; l--) {
+      const next = new Set();
+      for (const i of cur) for (const [j, k] of deps(i)) {
+        next.add(j); const a = box(i, l), b = box(j, l - 1);
+        el('line', { x1: a.x + a.w / 2, y1: a.y + a.h, x2: b.x + b.w / 2, y2: b.y, stroke: KIND[k], 'stroke-width': 2.2 }, over);
+      }
+      for (const i of cur) { const b = box(i, l); el('rect', { x: b.x, y: b.y, width: b.w, height: b.h, rx: 3, fill: 'none', stroke: '#111', 'stroke-width': 2 }, over); }
+      cur = next;
+    }
+    for (const i of cur) { const b = box(i, 0); el('rect', { x: b.x, y: b.y, width: b.w, height: b.h, rx: 3, fill: 'rgba(255,200,60,.85)', stroke: '#111', 'stroke-width': 2 }, over); }
+    const xs = [...cur].map(i => row[i]), lo = Math.min(...xs.map(c => c.x0)), hi = Math.max(...xs.map(c => c.x0 + c.s)), c = row[i0];
+    const mid = c.x0 + c.s / 2;
+    document.getElementById('cone-info').textContent = l0 === 0 ? 'Input row: hover a cell in a higher row.' :
+      `This ${c.s} m cell after ${l0} layer${l0 > 1 ? 's' : ''} depends on ${cur.size} input cells, ${mid - lo} m to the left and ${hi - mid} m to the right.`;
+  };
+  const pick = ev => {
+    const r = svg.getBoundingClientRect(), t = ev.touches ? ev.touches[0] : ev;
+    const x = (t.clientX - r.left) / r.width * W, y = (t.clientY - r.top) / r.height * H;
+    const l = Math.max(0, Math.min(NL - 1, NL - 1 - Math.floor((y - PADY + 16) / RH)));
+    const i = at(Math.max(0, Math.min(LEN - 0.01, (x - PADX) / U)));
+    if (i >= 0) draw(i, l);
+  };
+  svg.addEventListener('mousemove', pick);
+  svg.addEventListener('touchstart', e => { pick(e); e.preventDefault(); }, { passive: false });
+  draw(at(16.5), NL - 1);
+}
+
+// ---------- stacking layers: 2D receptive field ----------
+{
+  const fig = makeFig('fig-rf');
+  drawCells(fig.base, cells, SC); drawBlocks(fig.base, SC, 'rgba(255,255,255,.5)', 1);
+  const nb = cells.map(c => { const set = new Set(); for (let j = -1; j <= 1; j++) for (let i = -1; i <= 1; i++) for (const s of resolveAt(c.cx + i * c.s, c.cy + j * c.s, c.s).src) set.add(s.id); return [...set]; });
+  let L = 3, last = DEFAULT;
+  const draw = (x, y) => {
+    last = [x, y]; fig.over.replaceChildren();
+    const c = cellAt(x, y), first = new Map([[c.id, 0]]); let front = [c.id];
+    for (let l = 1; l <= L; l++) { const nf = []; for (const a of front) for (const b of nb[a]) if (!first.has(b)) { first.set(b, l); nf.push(b); } front = nf; }
+    for (const [id, l] of first) { const o = cells[id]; sq(fig.over, o.x0, o.y0, o.s, SC, { fill: '#fff', 'fill-opacity': 0.75 - 0.5 * l / Math.max(1, L), stroke: 'none' }); }
+    for (const [id] of first) { const o = cells[id]; sq(fig.over, o.x0, o.y0, o.s, SC, { fill: 'none', stroke: 'rgba(0,0,0,.35)', 'stroke-width': .6 }); }
+    const ax = Math.floor(c.cx) - L, ay = Math.floor(c.cy) - L;
+    el('rect', { x: ax * SC, y: ay * SC, width: (2 * L + 1) * SC, height: (2 * L + 1) * SC, fill: 'none', stroke: '#fff', 'stroke-width': 4 }, fig.over);
+    el('rect', { x: ax * SC, y: ay * SC, width: (2 * L + 1) * SC, height: (2 * L + 1) * SC, fill: 'none', stroke: '#111', 'stroke-width': 2, 'stroke-dasharray': '6 3' }, fig.over);
+    mark(fig.over, c.x0, c.y0, c.s, SC, '#111', { w: 2.5, inset: 1 });
+    const ids = [...first.keys()].map(i => cells[i]);
+    const ext = (k, s) => Math.max(...ids.map(o => o[k] + o.s)) - Math.min(...ids.map(o => o[k]));
+    stats('rf-stats', [['Hovered cell', `${c.s} m`], ['Input cells it depends on', `${ids.length}`], ['Extent in metres', `${ext('x0')} × ${ext('y0')} m`], ['Same layers on a uniform 1 m grid', `${2 * L + 1} × ${2 * L + 1} m`]]);
+  };
+  hover(fig, draw, DEFAULT);
+  document.getElementById('rf-range').addEventListener('input', e => { L = +e.target.value; document.getElementById('rf-l').textContent = L; draw(...last); });
 }
 
 // ---------- D: one image per level ----------
