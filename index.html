@@ -77,6 +77,7 @@
     <a href="#C">C · Blocks + halo</a>
     <a href="#stack">Stacking layers</a>
     <a href="#H">H · OctNet: kernel in finest cells</a>
+    <a href="#I">I · Mixed depth</a>
     <a href="#G">D · One image per level</a>
     <a href="#E">E · Look up each neighbour</a>
     <a href="#D">F · Graph (GNN)</a>
@@ -133,7 +134,7 @@
   </section>
 
   <section id="C">
-    <h2>C · Blocks + halo <span class="tag rec">proposed</span></h2>
+    <h2>C · Blocks + halo <span class="tag mid">candidate / baseline</span></h2>
     <div class="row">
       <div class="figcol"><div id="fig-C"></div><div class="hint">Hover over a block. Its halo (dashed) is coloured by how each halo cell is filled; the kernel on the hovered cell is outlined in black.</div></div>
       <div class="txtcol">
@@ -209,6 +210,34 @@
       <li>Long reach (a hot gas parcel moves 3–25 m in one 0.5 s step) comes from the coarse U-Net levels, which are uniform grids; there the same effect is at most half a coarse cell. The lopsidedness shown here is confined to the few cells around a size change.</li>
       <li>Whether it matters for fire shows up as different error on the two sides of a size change. That is the check to run, for C and for H.</li>
     </ul>
+  </section>
+
+  <section id="I">
+    <h2>I · Mixed depth: fine cells get extra layers first <span class="tag rec">candidate</span></h2>
+    <p>Run the first layers on the finest cells only, while bigger cells wait with their values unchanged. Then pool the fine cells up one size, where they join the native cells of that size, and run the next layers on that level. Repeat until the whole domain is one grid at the coarsest size. Every layer convolves cells of one size; sizes meet only through pooling. The decoder mirrors this on the way back (unpool, add the skip, run layers), so this is a U-Net whose first levels are FDS's own cell sizes.</p>
+    <div id="fig-I"></div>
+    <div class="legend" style="margin-top:6px">
+      <span><i class="sw" style="border-color:var(--same)"></i>reads a same-size cell</span>
+      <span><i class="sw" style="border-color:var(--finer)"></i>pooling: averages smaller cells</span>
+      <span><i class="sw" style="border-color:var(--coarser)"></i>seam: reads a bigger cell that is still waiting</span>
+      <span><i class="sw" style="border-color:#b8bec6"></i>waiting: value carried unchanged</span>
+    </div>
+    <p class="hint" id="I-info"></p>
+    <p class="hint">Same 1D row as the cone above, two layers per level (encoder only). Faded boxes are waiting. Hover over any box to see everything in the input it depends on.</p>
+    <h3>The same schedule on the 2D toy grid</h3>
+    <div class="levels" id="I-levels"></div>
+    <div class="stats" id="I-stats" style="margin-top:12px"></div>
+    <h3>Good</h3><ul>
+      <li>No convolution mixes sizes, so within a level the receptive field is square in metres.</li>
+      <li>The only lopsided spot is a seam, and it is bounded: a waiting cell never changes, so the fine layers can reach at most one bigger cell past the edge of their region. In C the reach grows by one bigger cell per layer once it crosses.</li>
+      <li>Depth goes where FDS put resolution, and coarse cells skip the fine layers. On the 80 prod decks with 2 layers per level this is about 2.2 cell-layers per native cell, against 4 for C with 4 layers, while the 0.25 m cells get 8 layers before the 4 m level instead of 4.</li>
+    </ul>
+    <h3>Catch</h3><ul>
+      <li>At a seam the fine layers read bigger cells that have not been updated yet (blue), so the two sides are a few layers apart in depth.</li>
+      <li>Pooled blocks must line up with the next size's blocks. FDS meshes usually nest by 2; not yet checked on every deck.</li>
+      <li>U-Nets usually add channels at coarser levels, which narrows the memory saving.</li>
+    </ul>
+    <p class="hint">Prior art: per-region depth chosen by a learned gate (Spatially Adaptive Computation Time, CVPR 2017; Dynamic Convolutions, CVPR 2020; Mixture-of-Depths, 2024); depth tied to octree level (Adaptive O-CNN, 2018); a fine stream that starts first with coarse streams joining later (HRNet, 2019); fine levels taking more steps (Berger–Oliger subcycling in adaptive-mesh CFD). Here the depth is fixed by the mesh, not learned.</p>
   </section>
 
   <section id="G">
@@ -666,6 +695,96 @@ function haloOf(b) {
   draw(cur);
 }
 
+// ---------- I: mixed depth (level-staged), 1D row + 2D levels ----------
+let stagedReads = 0;   // 2D toy, for the comparison table
+{
+  const LEN = 40, U = 24, RH = 50, PADX = 12, PADY = 42;
+  const native = [];
+  for (const [a, b, s] of [[0, 8, 4], [8, 16, 2], [16, 24, 1], [24, 32, 2], [32, 40, 4]]) for (let x = a; x < b; x += s) native.push({ x0: x, s });
+  const nativeAt = x => native.find(c => x >= c.x0 && x < c.x0 + c.s);
+  // a row at level s: cells with native size <= s are merged to size s and active; bigger cells wait
+  const unitsAt = lvl => { const out = []; for (let x = 0; x < LEN;) { const n = nativeAt(x), s = lvl === 'native' ? n.s : Math.max(n.s, lvl); out.push({ x0: x, s, act: lvl === 'native' || n.s <= lvl }); x += s; } return out; };
+  const deps = (prev, u) => {          // [index in prev row, how it is read]
+    if (!u.act) return [[prev.findIndex(p => p.x0 === u.x0 && p.s === u.s), 'pass']];
+    const out = new Map();
+    for (const d of [-1, 0, 1]) {
+      const px = Math.min(LEN - u.s / 2, Math.max(u.s / 2, u.x0 + u.s / 2 + d * u.s));
+      const hit = []; prev.forEach((p, i) => { if (p.x0 < px + u.s / 2 && p.x0 + p.s > px - u.s / 2) hit.push(i); });
+      if (hit.length === 1) out.set(hit[0], prev[hit[0]].s === u.s ? 'same' : 'coarser');
+      else for (const i of hit) out.set(i, 'finer');
+    }
+    return [...out];
+  };
+  const SCHED = [['input', 'native'], ['layer 1 · 1 m', 1], ['layer 2 · 1 m', 1], ['layer 3 · pool to 2 m', 2], ['layer 4 · 2 m', 2], ['layer 5 · pool to 4 m', 4], ['layer 6 · 4 m', 4]];
+  const rows = SCHED.map(([, l]) => unitsAt(l));
+  const dI = rows.map((r, k) => k ? r.map(u => deps(rows[k - 1], u)) : []);
+  const crow = unitsAt('native'), dC = crow.map(u => deps(crow, u));   // C: every layer on the native cells
+  const support = list => [Math.min(...list.map(u => u.x0)), Math.max(...list.map(u => u.x0 + u.s))];
+  const coneI = (k, i) => { let cur = new Set([i]); for (let r = k; r > 0; r--) { const nx = new Set(); for (const j of cur) for (const [p] of dI[r][j]) nx.add(p); cur = nx; } return [...cur].map(j => rows[0][j]); };
+  const coneC = (k, u) => { let cur = new Set(crow.map((c, j) => j).filter(j => crow[j].x0 >= u.x0 && crow[j].x0 < u.x0 + u.s)); for (let r = k; r > 0; r--) { const nx = new Set(); for (const j of cur) for (const [p] of dC[j]) nx.add(p); cur = nx; } return [...cur].map(j => crow[j]); };
+  { const k = 2, i = rows[k].findIndex(u => u.x0 === 16), [lo, hi] = support(coneI(k, i)), [clo, chi] = support(coneC(k, rows[k][i]));   // numbers quoted in the text
+    console.assert(16.5 - lo === 2.5 && hi - 16.5 === 2.5 && 16.5 - clo === 4.5 && chi - 16.5 === 2.5, 'I seam reach'); }
+  const W = LEN * U + 2 * PADX, H = SCHED.length * RH + PADY + 4;
+  const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, class: 'side', style: `width:100%;max-width:${W}px;cursor:crosshair` }, document.getElementById('fig-I'));
+  const base = el('g', {}, svg), over = el('g', {}, svg);
+  const yOf = k => PADY + (SCHED.length - 1 - k) * RH;          // input at the bottom
+  const box = (k, i) => { const u = rows[k][i]; return { x: PADX + u.x0 * U + 2, y: yOf(k), w: u.s * U - 4, h: 22 }; };
+  const shade = { 4: '#c9ced6', 2: '#9aa3b0', 1: '#5b6470' }, PASS = '#b8bec6';
+  rows.forEach((r, k) => {
+    const t = el('text', { x: 2, y: yOf(k) - 6, 'font-size': 11, fill: '#5b6470' }, base); t.textContent = SCHED[k][0];
+    r.forEach((u, i) => { const b = box(k, i); el('rect', { x: b.x, y: b.y, width: b.w, height: b.h, rx: 3, fill: shade[u.s], 'fill-opacity': u.act ? 1 : 0.28 }, base); });
+    if (k) r.forEach((u, i) => { for (const [j] of dI[k][i]) { const a = box(k, i), b = box(k - 1, j); el('line', { x1: a.x + a.w / 2, y1: a.y + a.h, x2: b.x + b.w / 2, y2: b.y, stroke: 'rgba(0,0,0,.09)', 'stroke-width': 1 }, base); } });
+  });
+  [['4 m cells', 4], ['2 m', 12], ['1 m', 20], ['2 m', 28], ['4 m cells', 36]].forEach(([s, x]) => { const t = el('text', { x: PADX + x * U, y: 14, 'text-anchor': 'middle', 'font-size': 12, fill: '#1f2328' }, base); t.textContent = s; });
+  const draw = (k0, i0) => {
+    over.replaceChildren();
+    let cur = new Set([i0]);
+    for (let k = k0; k > 0; k--) {
+      const nx = new Set();
+      for (const i of cur) for (const [j, kind] of dI[k][i]) {
+        nx.add(j); const a = box(k, i), b = box(k - 1, j);
+        el('line', { x1: a.x + a.w / 2, y1: a.y + a.h, x2: b.x + b.w / 2, y2: b.y, stroke: kind === 'pass' ? PASS : KIND[kind], 'stroke-width': 2.2, 'stroke-dasharray': kind === 'pass' ? '4 3' : '' }, over);
+      }
+      for (const i of cur) { const b = box(k, i); el('rect', { x: b.x, y: b.y, width: b.w, height: b.h, rx: 3, fill: 'none', stroke: '#111', 'stroke-width': 2 }, over); }
+      cur = nx;
+    }
+    for (const i of cur) { const b = box(0, i); el('rect', { x: b.x, y: b.y, width: b.w, height: b.h, rx: 3, fill: 'rgba(255,200,60,.85)', stroke: '#111', 'stroke-width': 2 }, over); }
+    const u = rows[k0][i0], mid = u.x0 + u.s / 2, [lo, hi] = support(coneI(k0, i0));
+    if (!k0) { document.getElementById('I-info').textContent = 'Input row: hover over a box in a higher row.'; return; }
+    const [clo, chi] = support(coneC(k0, u)), ulo = Math.max(0, u.x0 - k0), uhi = Math.min(LEN, u.x0 + u.s + k0);
+    document.getElementById('I-info').textContent = `This ${u.s} m ${u.act ? '' : 'waiting '}box after ${SCHED[k0][0]} depends on input ${mid - lo} m west / ${hi - mid} m east of its centre. ` +
+      `C after the same ${k0} layer${k0 > 1 ? 's' : ''}: ${mid - clo} / ${chi - mid} m. A uniform 1 m grid: ${mid - ulo} / ${uhi - mid} m.`;
+  };
+  const pick = ev => {
+    const r = svg.getBoundingClientRect(), t = ev.touches ? ev.touches[0] : ev;
+    const x = (t.clientX - r.left) / r.width * W, y = (t.clientY - r.top) / r.height * H;
+    const k = Math.max(0, Math.min(SCHED.length - 1, SCHED.length - 1 - Math.floor((y - PADY + 16) / RH)));
+    const xm = Math.max(0, Math.min(LEN - 0.01, (x - PADX) / U)), i = rows[k].findIndex(u => xm >= u.x0 && xm < u.x0 + u.s);
+    if (i >= 0) draw(k, i);
+  };
+  svg.addEventListener('mousemove', pick);
+  svg.addEventListener('touchstart', e => { pick(e); e.preventDefault(); }, { passive: false });
+  draw(2, rows[2].findIndex(u => u.x0 === 16));
+
+  // 2D: which cells run at each level (faded = waiting)
+  const host = document.getElementById('I-levels'), active = {};
+  for (const [s, cap] of [[1, 'Layers 1–2 · 1 m level'], [2, 'Layers 3–4 · 2 m level (1 m cells pooled in)'], [4, 'Layers 5–6 · 4 m level (whole domain)']]) {
+    const k = 5, fg = document.createElement('figure'); host.appendChild(fg);
+    const sv = el('svg', { viewBox: `0 0 ${D * k} ${D * k}`, class: 'side', width: D * k, height: D * k }, fg);
+    const seen = new Set(); let n = 0;
+    for (let y = 0; y < D; y += s) for (let x = 0; x < D; x += s) {
+      const t = cellAt(x + .5, y + .5);
+      if (t.s > s) { if (!seen.has(t.id)) { seen.add(t.id); sq(sv, t.x0, t.y0, t.s, k, { fill: color(t.v), 'fill-opacity': .22, stroke: '#fff', 'stroke-width': .8 }); } }
+      else { n++; sq(sv, x, y, s, k, { fill: color(resolveAt(x + s / 2, y + s / 2, s).v), stroke: 'rgba(255,255,255,.6)', 'stroke-width': .8 }); }
+    }
+    active[s] = n;
+    const c = document.createElement('figcaption'); c.textContent = `${cap}: ${n} active cells`; fg.appendChild(c);
+  }
+  const staged = 2 * (active[1] + active[2] + active[4]); stagedReads = staged * 9;
+  console.assert(active[1] === cells.filter(c => c.s === 1).length && active[4] === 144, 'I level counts');
+  stats('I-stats', [['Layers seen before the 4 m level', '1 m cells: 6 · 2 m cells: 4 · 4 m cells: 2'], ['Cell-layers, 2D toy, 6 layers', `${fmt(staged)} (C, 6 layers on every cell: ${fmt(6 * cells.length)})`], ['3D, 80 prod decks, 2 layers per level', '~2.2 cell-layers per native cell (C with 4 layers: 4)']]);
+}
+
 // ---------- D: one image per level ----------
 {
   const fig = makeFig('fig-G');
@@ -826,7 +945,8 @@ for (let a = 0; a < cells.length; a++) for (let b = a + 1; b < cells.length; b++
     ['B · Coarsest everywhere', '144', `${144 * 9}`, '~0.3 M cells; small', 'loses the house-scale detail'],
     ['C · Blocks + halo', `${cells.length} (+${halo} halo)`, `${fmt(cells.length * 9)}`, '1–4 M cells; ~13–33 GiB/step (gas)', 'halo gather map is custom code'],
     ['H · OctNet (kernel in finest cells)', `${cells.length} (+${halo} halo)`, `${fmt(cells.length * 9)}`, 'like C', 'weights even out; which inputs a cell sees stays lopsided'],
-    ['D · One image per level',`${cells.length} (+${144 - 128} shadow)`, `~${fmt(cells.length * 9)}`, 'like C, plus bounding-box padding', 'padding if a level isn\'t box-shaped'],
+    ['I · Mixed depth (level-staged)', `${cells.length}`, `~${fmt(Math.round(stagedReads / 6))} (average over 6 layers)`, '~2.2 cell-layers per native cell vs 4 for C (80 decks)', 'seam: fine layers read bigger cells that are still waiting'],
+    ['D · One image per level', `${cells.length} (+${144 - 128} shadow)`, `~${fmt(cells.length * 9)}`, 'like C, plus bounding-box padding', 'padding if a level isn\'t box-shaped'],
     ['E · Per-cell lookup', `${cells.length}`, `${fmt(cells.length * 9)}`, 'like C', 'cross-size lookups are ours to write; gathers are slower'],
     ['F · Graph (GNN)', `${cells.length}`, `${fmt(edges.length * 2)} edges`, '1–4 M cells; ~110–215 GiB/step (gas)', 'a tensor per edge per layer'],
     ['G · Radius in metres', `${cells.length}`, `${fmt(fCount)} pairs (R = 3 m)`, 'at least as much as F', 'neighbour count swings with cell size'],
