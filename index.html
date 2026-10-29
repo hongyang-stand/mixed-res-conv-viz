@@ -76,6 +76,7 @@
     <a href="#B">B · Coarsest grid everywhere</a>
     <a href="#C">C · Blocks + halo</a>
     <a href="#stack">Stacking layers</a>
+    <a href="#H">H · OctNet: kernel in finest cells</a>
     <a href="#G">D · One image per level</a>
     <a href="#E">E · Look up each neighbour</a>
     <a href="#D">F · Graph (GNN)</a>
@@ -192,6 +193,22 @@
     features = act(norm(conv(x)))     # one batched conv</pre>
       </div>
     </div>
+  </section>
+
+  <section id="H">
+    <h2>H · Kernel counted in finest cells (OctNet) <span class="tag mid">evens the weights, not the reach</span></h2>
+    <p>OctNet (Riegler, Ulusoy and Geiger, CVPR 2017) defines a convolution on mixed-size cells this way: treat every big cell as a block of identical finest cells, run an ordinary kernel on that finest grid, then average the result back to one value per big cell. A big cell's interior is computed once, so the cost is close to C's, and the paper shows the result equals the full fine-grid convolution. In C's block form it means each cell size uses a kernel derived from the one finest-cell kernel instead of its own weights, and one kernel step always means one finest cell.</p>
+    <div id="fig-oct"></div>
+    <p>Layers <i>L</i> = <b id="oct-l">4</b> <input type="range" id="oct-range" min="1" max="8" step="1" value="4"></p>
+    <div class="stats" id="oct-stats"></div>
+    <p class="hint">Same 1D row as the cone above. Hover over a cell. Bars show how much each metre of input weighs in that cell's output after <i>L</i> layers, with every kernel weight set to 1/3; all three rows share one scale. The bracket under each row spans every input the cell depends on at all.</p>
+    <h3>What this means</h3>
+    <ul>
+      <li><b>Which inputs a cell depends on is exactly as lopsided as in C.</b> A big cell holds one number, so anything that reaches its near edge is spread over its whole width in the next layer. Any scheme that keeps one value per big cell has this; only A, which stores the finest grid everywhere, is even.</li>
+      <li><b>Where the weight goes is close to the uniform grid.</b> A 1 m cell next to the 2 m block, after 4 layers: its weight sits on average 1.7 m away on the fine side and 2.2 m on the coarse side, against 1.7 m both ways on a uniform grid and 1.7 / 2.9 m in C. OctNet only lets the near edge of a big cell count, so the far parts weigh little.</li>
+      <li>Long reach (a hot gas parcel moves 3–25 m in one 0.5 s step) comes from the coarse U-Net levels, which are uniform grids; there the same effect is at most half a coarse cell. The lopsidedness shown here is confined to the few cells around a size change.</li>
+      <li>Whether it matters for fire shows up as different error on the two sides of a size change. That is the check to run, for C and for H.</li>
+    </ul>
   </section>
 
   <section id="G">
@@ -574,6 +591,81 @@ function haloOf(b) {
   document.getElementById('rf-range').addEventListener('input', e => { L = +e.target.value; document.getElementById('rf-l').textContent = L; draw(...last); });
 }
 
+// ---------- H: OctNet vs C vs the uniform grid, on the cone's 1D row ----------
+{
+  const LEN = 40, U = 22, PADL = 12, PADT = 26, SH = 74, row = [];
+  for (const [a, b, s] of [[0, 8, 4], [8, 16, 2], [16, 24, 1], [24, 32, 2], [32, 40, 4]]) for (let x = a; x < b; x += s) row.push({ x0: x, s });
+  const at = x => row.findIndex(c => x >= c.x0 && x < c.x0 + c.s);
+  const vox = Array.from({ length: LEN }, (_, x) => ({ x0: x, s: 1 }));
+  const cl = v => Math.min(LEN - 1, Math.max(0, v));   // domain edge repeats the last value
+  // one layer as a sparse matrix, op[i] = [[input j, weight], ...]
+  const opA = vox.map((_, v) => [-1, 0, 1].map(d => [cl(v + d), 1 / 3]));
+  const opC = row.map(c => {
+    const out = [];
+    for (const d of [-1, 0, 1]) {
+      const px = Math.min(LEN - .5, Math.max(.5, c.x0 + c.s / 2 + d * c.s)), t = row[at(px)];
+      if (t.s >= c.s) out.push([at(px), 1 / 3]);
+      else { const js = new Set(); for (let x = px - c.s / 2 + .5; x < px + c.s / 2; x++) js.add(at(x)); for (const j of js) out.push([j, row[j].s / c.s / 3]); }
+    }
+    return out;
+  });
+  // OctNet: the 3-tap kernel on each 1 m voxel of the cell, averaged back to the cell's one value
+  const opO = row.map(c => { const out = []; for (let v = c.x0; v < c.x0 + c.s; v++) for (const d of [-1, 0, 1]) out.push([at(cl(v + d) + .5), 1 / 3 / c.s]); return out; });
+  console.assert([opA, opC, opO].every(op => op.every(r => Math.abs(r.reduce((a, [, w]) => a + w, 0) - 1) < 1e-9)), 'each layer is a weighted average');
+  const step = (w, op) => { const o = new Float64Array(op.length); w.forEach((wi, i) => { if (wi) for (const [j, a] of op[i]) o[j] += wi * a; }); return o; };
+  const MODES = [['A · uniform 1 m grid', vox, opA, '#8a929c'], ['C · blocks + halo', row, opC, '#0f9d8a'], ['H · OctNet', row, opO, '#2f6fed']];
+  const influence = (i, L) => MODES.map(([, units, op]) => {   // weight per metre of input
+    const c = row[i]; let w = new Float64Array(units.length);
+    if (units === vox) for (let x = c.x0; x < c.x0 + c.s; x++) w[x] = 1 / c.s; else w[i] = 1;
+    for (let l = 0; l < L; l++) w = step(w, op);
+    const d = new Float64Array(LEN); units.forEach((u, j) => { for (let x = u.x0; x < u.x0 + u.s; x++) d[x] = w[j] / u.s; });
+    return d;
+  });
+  const reach = (d, c) => {
+    let lo = LEN, hi = 0, mw = 0, sw = 0, me = 0, se = 0;
+    d.forEach((v, x) => { if (v > 1e-12) { lo = Math.min(lo, x); hi = Math.max(hi, x + 1); } const xc = x + .5; if (xc < c) { mw += v * (c - xc); sw += v; } else if (xc > c) { me += v * (xc - c); se += v; } });
+    return { w: c - lo, e: hi - c, mw: sw ? mw / sw : 0, me: se ? me / se : 0 };
+  };
+  { const c = row[at(16.5)], r = MODES.map((_, k) => reach(influence(at(16.5), 4)[k], c.x0 + c.s / 2));   // numbers quoted in the text
+    console.assert(Math.abs(r[0].mw - 1.68) < .01 && Math.abs(r[1].mw - 2.91) < .01 && Math.abs(r[2].mw - 2.24) < .01 && r[1].w === r[2].w, 'H quoted numbers'); }
+  const W = LEN * U + 2 * PADL, H = PADT + MODES.length * SH + 22;
+  const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, class: 'side', style: `width:100%;max-width:${W}px;cursor:crosshair` }, document.getElementById('fig-oct'));
+  const base = el('g', {}, svg), over = el('g', {}, svg);
+  const band = { 4: '#f1f3f5', 2: '#e6e9ed', 1: '#d9dde3' };
+  [['4 m cells', 4], ['2 m', 12], ['1 m', 20], ['2 m', 28], ['4 m cells', 36]].forEach(([s, x]) => { const t = el('text', { x: PADL + x * U, y: 14, 'text-anchor': 'middle', 'font-size': 12, fill: '#1f2328' }, base); t.textContent = s; });
+  MODES.forEach(([name, units], k) => {
+    const y = PADT + k * SH;
+    for (const c of row) el('rect', { x: PADL + c.x0 * U, y, width: c.s * U, height: SH - 14, fill: band[c.s], stroke: '#fff', 'stroke-width': 1.5 }, base);
+    const t = el('text', { x: PADL + 4, y: y + 13, 'font-size': 12, 'font-weight': 600, fill: MODES[k][3] }, base); t.textContent = name;
+  });
+  for (let x = 0; x <= LEN; x += 8) { const t = el('text', { x: PADL + x * U, y: H - 4, 'text-anchor': 'middle', 'font-size': 11, fill: '#5b6470' }, base); t.textContent = `${x} m`; }
+  let L = 4, cur = at(16.5);
+  const draw = i => {
+    cur = i; over.replaceChildren();
+    const c = row[i], mid = c.x0 + c.s / 2, ds = influence(i, L), top = Math.max(...ds.map(d => Math.max(...d)));
+    const out = [];
+    ds.forEach((d, k) => {
+      const y = PADT + k * SH, hh = SH - 34, col = MODES[k][3], r = reach(d, mid);
+      d.forEach((v, x) => { if (v > 1e-12) { const h = Math.max(1, hh * v / top); el('rect', { x: PADL + x * U + 2, y: y + 18 + hh - h, width: U - 4, height: h, fill: col }, over); } });
+      el('rect', { x: PADL + c.x0 * U + 1, y: y + 1, width: c.s * U - 2, height: SH - 16, fill: 'none', stroke: '#111', 'stroke-width': 2 }, over);
+      const by = y + SH - 9, x1 = PADL + (mid - r.w) * U, x2 = PADL + (mid + r.e) * U;
+      el('line', { x1, y1: by, x2, y2: by, stroke: col, 'stroke-width': 2 }, over);
+      [x1, x2].forEach(xx => el('line', { x1: xx, y1: by - 4, x2: xx, y2: by + 4, stroke: col, 'stroke-width': 2 }, over));
+      out.push([MODES[k][0], `depends on inputs up to ${r.w} m west / ${r.e} m east; weight on average ${r.mw.toFixed(1)} m west / ${r.me.toFixed(1)} m east`]);
+    });
+    el('line', { x1: PADL + mid * U, y1: PADT - 4, x2: PADL + mid * U, y2: PADT + MODES.length * SH - 12, stroke: '#111', 'stroke-width': 1, 'stroke-dasharray': '4 3' }, over);
+    stats('oct-stats', [['Hovered cell', `${c.s} m, centre at ${mid} m, after ${L} layer${L > 1 ? 's' : ''}`], ...out]);
+  };
+  const pick = ev => {
+    const r = svg.getBoundingClientRect(), t = ev.touches ? ev.touches[0] : ev;
+    draw(at(Math.max(0, Math.min(LEN - 0.01, ((t.clientX - r.left) / r.width * W - PADL) / U))));
+  };
+  svg.addEventListener('mousemove', pick);
+  svg.addEventListener('touchstart', e => { pick(e); e.preventDefault(); }, { passive: false });
+  document.getElementById('oct-range').addEventListener('input', e => { L = +e.target.value; document.getElementById('oct-l').textContent = L; draw(cur); });
+  draw(cur);
+}
+
 // ---------- D: one image per level ----------
 {
   const fig = makeFig('fig-G');
@@ -733,7 +825,8 @@ for (let a = 0; a < cells.length; a++) for (let b = a + 1; b < cells.length; b++
     ['A · Finest everywhere', `${fmt(D * D)}`, `${fmt(D * D * 9)}`, '~168 M cells; ~1,300 GiB/step', 'mostly copies; doesn\'t fit'],
     ['B · Coarsest everywhere', '144', `${144 * 9}`, '~0.3 M cells; small', 'loses the house-scale detail'],
     ['C · Blocks + halo', `${cells.length} (+${halo} halo)`, `${fmt(cells.length * 9)}`, '1–4 M cells; ~13–33 GiB/step (gas)', 'halo gather map is custom code'],
-    ['D · One image per level', `${cells.length} (+${144 - 128} shadow)`, `~${fmt(cells.length * 9)}`, 'like C, plus bounding-box padding', 'padding if a level isn\'t box-shaped'],
+    ['H · OctNet (kernel in finest cells)', `${cells.length} (+${halo} halo)`, `${fmt(cells.length * 9)}`, 'like C', 'weights even out; which inputs a cell sees stays lopsided'],
+    ['D · One image per level',`${cells.length} (+${144 - 128} shadow)`, `~${fmt(cells.length * 9)}`, 'like C, plus bounding-box padding', 'padding if a level isn\'t box-shaped'],
     ['E · Per-cell lookup', `${cells.length}`, `${fmt(cells.length * 9)}`, 'like C', 'cross-size lookups are ours to write; gathers are slower'],
     ['F · Graph (GNN)', `${cells.length}`, `${fmt(edges.length * 2)} edges`, '1–4 M cells; ~110–215 GiB/step (gas)', 'a tensor per edge per layer'],
     ['G · Radius in metres', `${cells.length}`, `${fmt(fCount)} pairs (R = 3 m)`, 'at least as much as F', 'neighbour count swings with cell size'],
