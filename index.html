@@ -1,0 +1,626 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow, noarchive">
+<title>Convolution on cells of different sizes</title>
+<style>
+  :root {
+    --ink: #1f2328; --muted: #5b6470; --line: #d8dde3; --bg: #fbfbfa; --card: #ffffff;
+    --same: #0f9d8a; --coarser: #2f6fed; --finer: #d63384; --out: #8a929c; --focus: #111;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 16px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; color: var(--ink); background: var(--bg); }
+  main { max-width: 1120px; margin: 0 auto; padding: 32px 20px 80px; }
+  h1 { font-size: 30px; line-height: 1.2; margin: 0 0 10px; }
+  h2 { font-size: 22px; margin: 0 0 6px; }
+  h3 { font-size: 15px; margin: 14px 0 4px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+  p { margin: 6px 0; }
+  .lede { font-size: 18px; color: var(--muted); max-width: 820px; }
+  .answer { background: #fff; border: 1px solid var(--line); border-left: 4px solid var(--same); padding: 14px 18px; margin: 18px 0 26px; border-radius: 6px; max-width: 880px; }
+  .answer ol { margin: 6px 0 0 18px; padding: 0; }
+  nav { position: sticky; top: 0; z-index: 5; background: rgba(251,251,250,.95); backdrop-filter: blur(4px); padding: 8px 0; border-bottom: 1px solid var(--line); margin-bottom: 18px; }
+  nav a { display: inline-block; margin: 3px 6px 3px 0; padding: 3px 10px; border: 1px solid var(--line); border-radius: 14px; color: var(--ink); text-decoration: none; font-size: 14px; background: #fff; }
+  nav a:hover { border-color: var(--ink); }
+  section { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 20px 22px; margin: 0 0 22px; scroll-margin-top: 60px; }
+  .row { display: flex; gap: 26px; flex-wrap: wrap; align-items: flex-start; }
+  .figcol { flex: 0 0 434px; max-width: 100%; }
+  .txtcol { flex: 1 1 340px; min-width: 300px; }
+  svg.fig { width: 432px; max-width: 100%; height: auto; display: block; border: 1px solid var(--line); background: #fff; touch-action: none; cursor: crosshair; }
+  svg.side { width: auto; max-width: 100%; height: auto; display: block; }
+  .hint { font-size: 13px; color: var(--muted); margin-top: 6px; }
+  .stats { display: grid; grid-template-columns: auto 1fr; gap: 2px 14px; font-size: 14px; margin: 8px 0; }
+  .stats b { font-variant-numeric: tabular-nums; }
+  .tag { display: inline-block; font-size: 12px; font-weight: 600; padding: 1px 8px; border-radius: 10px; margin-left: 8px; vertical-align: middle; }
+  .tag.rec { background: #dff5f1; color: #0b6b5e; }
+  .tag.no { background: #f3f4f6; color: #4b5563; }
+  .tag.mid { background: #eef3ff; color: #2448a8; }
+  .legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 13px; margin: 8px 0; }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .sw { width: 14px; height: 14px; border-radius: 3px; border: 2.5px solid; display: inline-block; background: #fff; }
+  .pros li, .cons li { margin: 2px 0; }
+  ul { margin: 4px 0 4px 18px; padding: 0; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-size: 13px; color: var(--muted); font-weight: 600; }
+  td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .btns button { font: inherit; font-size: 14px; padding: 5px 12px; margin: 4px 6px 4px 0; border: 1px solid var(--line); background: #fff; border-radius: 6px; cursor: pointer; }
+  .btns button.on { border-color: var(--ink); background: var(--ink); color: #fff; }
+  input[type=range] { width: 220px; vertical-align: middle; }
+  .levels { display: flex; gap: 18px; flex-wrap: wrap; align-items: flex-end; margin-top: 10px; }
+  .levels figure { margin: 0; }
+  .levels figcaption { font-size: 13px; color: var(--muted); margin-top: 4px; }
+  footer { color: var(--muted); font-size: 13px; margin-top: 30px; }
+  code { font-size: 13px; background: #f3f4f6; padding: 1px 5px; border-radius: 4px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Convolution on cells of different sizes</h1>
+  <p class="lede">A fire simulation (FDS) splits space into small blocks of cells. Blocks near the house use small cells and blocks far away use big ones. This page uses a 2D picture whose pixels come in three sizes to show the ways a convolution can run on that kind of grid.</p>
+
+  <div class="answer">
+    <b>Short answer.</b> A convolution counts in <i>cells</i>, not metres: a 3×3 kernel reads the cell itself and its 8 neighbours.
+    <ol>
+      <li>Inside one block every cell has the same size, so the block is an ordinary small image and the kernel works as usual.</li>
+      <li>Sizes differ only across a block's edge. Before each layer, give every block a one-cell border (a <b>halo</b>) holding its neighbours' values, converted to this block's cell size: <b style="color:var(--finer)">average</b> them if the neighbour's cells are smaller, <b style="color:var(--coarser)">copy</b> the value if they are bigger.</li>
+      <li>The cell size is fed in as an extra input channel, so the same weights know whether one step means 1 m or 4 m.</li>
+    </ol>
+    Hover over any figure below to see exactly what a kernel reads.
+  </div>
+
+  <nav>
+    <a href="#setup">The toy grid</a>
+    <a href="#A">A · Finest grid everywhere</a>
+    <a href="#B">B · Coarsest grid everywhere</a>
+    <a href="#C">C · Blocks + halo</a>
+    <a href="#G">D · One image per level</a>
+    <a href="#E">E · Look up each neighbour</a>
+    <a href="#D">F · Graph (GNN)</a>
+    <a href="#F">G · Radius in metres</a>
+    <a href="#flux">Keeping mass exact</a>
+    <a href="#compare">Comparison</a>
+  </nav>
+
+  <section id="setup">
+    <h2>The toy grid</h2>
+    <div class="row">
+      <div class="figcol"><div id="fig-setup"></div><div class="hint">Hover over a cell to see its size and block.</div></div>
+      <div class="txtcol">
+        <p>A 48 × 48 m domain, cut into blocks of 4 × 4 cells, the same way FDS uses blocks of 16 × 16 × 16 in 3D.</p>
+        <div class="stats" id="setup-stats"></div>
+        <p>The colours show a made-up temperature: a fire next to the house (bottom middle), a plume rising and leaning right, and a small hot spot (right of the fire) that only the 1 m cells can resolve.</p>
+        <p>The sizes meet in three ways: 1 m next to 2 m, 2 m next to 4 m, and 1 m directly next to 4 m (a jump of 4×). Every approach below has to handle all three.</p>
+        <p id="setup-info" class="hint"></p>
+      </div>
+    </div>
+  </section>
+
+  <section id="A">
+    <h2>A · Resample everything to the finest grid <span class="tag no">simple, far too big in 3D</span></h2>
+    <div class="row">
+      <div class="figcol"><div id="fig-A"></div><div class="hint">Hover: the 3×3 kernel on the 1 m pixel grid.</div></div>
+      <div class="txtcol">
+        <p>Cut every cell into 1 m pixels, copying the value into each one, then run a normal CNN on a 48 × 48 image.</p>
+        <div class="stats" id="A-stats"></div>
+        <h3>Good</h3><ul><li>Standard image CNN, nothing custom.</li></ul>
+        <h3>Catch</h3><ul>
+          <li>Most pixels are copies: they hold no information FDS computed, and the network spends nearly all its compute on them.</li>
+          <li>In 3D the ratio is far worse, since each size jump costs 8×, not 4×: 0.25 m everywhere is ~168 M cells, against 1–4 M real FDS cells. That is about 1,300 GiB of activations per training step.</li>
+          <li>The loss would ask the model for fine detail that the labels don't contain.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section id="B">
+    <h2>B · Resample everything to the coarsest grid <span class="tag no">cheap, throws away the house</span></h2>
+    <div class="row">
+      <div class="figcol"><div id="fig-B"></div><div class="hint">Hover: the 3×3 kernel on the 4 m pixel grid.</div></div>
+      <div class="txtcol">
+        <p>Average the small cells into 4 m pixels and run a normal CNN on a 12 × 12 image.</p>
+        <div class="stats" id="B-stats"></div>
+        <h3>Good</h3><ul><li>Standard CNN, tiny.</li></ul>
+        <h3>Catch</h3><ul>
+          <li>The hot spot next to the house is averaged away. In the real problem, the heat on the house walls is decided at exactly that scale.</li>
+          <li>It is still useful as the coarse level of a U-Net (approach C or D), not as the whole model.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section id="C">
+    <h2>C · Blocks + halo <span class="tag rec">proposed</span></h2>
+    <div class="row">
+      <div class="figcol"><div id="fig-C"></div><div class="hint">Hover over a block. Its halo (dashed) is coloured by how each halo cell is filled; the kernel on the hovered cell is outlined in black.</div></div>
+      <div class="txtcol">
+        <p>Keep FDS's blocks as they are. Each block is a small regular image at its own cell size. Before every conv layer, wrap each block in a one-cell halo filled from its neighbours, <i>converted to this block's cell size</i>:</p>
+        <div class="legend">
+          <span><i class="sw" style="border-color:var(--same)"></i>same size: copy the neighbour cell</span>
+          <span><i class="sw" style="border-color:var(--finer)"></i>neighbour finer: average the small cells under it</span>
+          <span><i class="sw" style="border-color:var(--coarser)"></i>neighbour coarser: copy the big cell it sits in</span>
+          <span><i class="sw" style="border-color:var(--out)"></i>outside the domain: boundary value</span>
+        </div>
+        <p>After that, every block is just a 6 × 6 image (right), whatever its cell size. All blocks of the same shape are stacked into one batch and run through one ordinary <code>conv2d</code> (<code>conv3d</code> in 3D). The cell size goes in as an extra channel.</p>
+        <div id="C-side"></div>
+        <div class="stats" id="C-stats"></div>
+        <h3>Good</h3><ul>
+          <li>Keeps every real FDS cell and nothing else; the halo is rebuilt each layer and thrown away.</li>
+          <li>Dense convs on GPU tensor cores, and no per-neighbour tensors to store. In 3D, about 13–33 GiB per step for the gas (estimate), against ~110–215 for a GNN.</li>
+          <li>Which cells fill each halo cell is fixed per scene, so it is precomputed once as a gather map.</li>
+        </ul>
+        <h3>Catch</h3><ul>
+          <li>The halo map is custom code: one gather per layer.</li>
+          <li>The kernel reaches 1 cell, so 1 m in a fine block and 4 m in a coarse one. Reach over distance comes from coarse U-Net levels, not from this layer.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section id="G">
+    <h2>D · One image per level (patch-based AMR) <span class="tag mid">close alternative to C</span></h2>
+    <div class="row">
+      <div class="figcol"><div id="fig-G"></div><div class="hint">Outlines show each level's rectangle. Hatched 4 m cells sit under the finer levels ("shadow" cells holding the average of the cells above them).</div></div>
+      <div class="txtcol">
+        <p>Group all cells of one size into one rectangle (its bounding box) and treat each rectangle as one image, with a ghost ring filled the same way as C's halo. The coarsest level covers the whole domain, including under the finer patches.</p>
+        <div class="stats" id="G-stats"></div>
+        <h3>Good</h3><ul>
+          <li>Few, large images: fewer conv calls and fewer halo cells than C.</li>
+          <li>The coarse level is already a full-domain image, which is the first level of the U-Net.</li>
+        </ul>
+        <h3>Catch</h3><ul>
+          <li>If one size's cells don't form a rectangle (an L-shape, say), the bounding box contains padding. In FDS that depends on how box-shaped each scene's refinement is.</li>
+        </ul>
+      </div>
+    </div>
+    <div class="levels" id="G-levels"></div>
+  </section>
+
+  <section id="E">
+    <h2>E · Look up each neighbour on the fly (sparse / octree conv) <span class="tag mid">same rule as C, no blocks</span></h2>
+    <div class="row">
+      <div class="figcol"><div id="fig-E"></div><div class="hint">Hover over any cell: each of the 9 kernel positions is drawn at the cell's own size and coloured by how it is filled.</div></div>
+      <div class="txtcol">
+        <p>Skip the blocks. For every cell, place the 3 × 3 kernel at the cell's <i>own</i> size and look up what sits under each of the 9 positions, with the same rule as C (copy, average or boundary). Libraries such as spconv, TorchSparse and MinkowskiEngine do this with hash tables, and octree CNNs (O-CNN) do it on quadtrees and octrees.</p>
+        <div class="legend">
+          <span><i class="sw" style="border-color:var(--same)"></i>same size</span>
+          <span><i class="sw" style="border-color:var(--finer)"></i>average of finer cells</span>
+          <span><i class="sw" style="border-color:var(--coarser)"></i>copy of a coarser cell</span>
+          <span><i class="sw" style="border-color:var(--out)"></i>outside</span>
+        </div>
+        <div class="stats" id="E-stats"></div>
+        <h3>Good</h3><ul><li>No halo storage; works for any layout.</li></ul>
+        <h3>Catch</h3><ul>
+          <li>Most sparse-conv libraries assume one cell size per level, so the cross-size averaging is still ours to write.</li>
+          <li>Gathers are slower than C's dense block convs. C does the same thing, grouped into regular blocks.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section id="D">
+    <h2>F · Graph network (message passing) <span class="tag no">the earlier plan</span></h2>
+    <div class="row">
+      <div class="figcol"><div id="fig-D"></div><div class="hint">Hover over a cell to see its edges. Every line is an edge that stores its own hidden vector during training.</div></div>
+      <div class="txtcol">
+        <p>Each cell is a node, and each pair of cells sharing a face is an edge, whatever their sizes. A layer computes a message on every edge with a small MLP, then each node sums its incoming messages.</p>
+        <div class="stats" id="D-stats"></div>
+        <h3>Good</h3><ul>
+          <li>Handles any sizes and any shapes with no special rules. A big cell simply has more neighbours.</li>
+          <li>The natural fit for walls and vegetation particles, which are not on a grid.</li>
+        </ul>
+        <h3>Catch</h3><ul>
+          <li>Training stores a hidden vector on every edge, per layer. In 3D a cell has about 6 face edges, which is why activation memory is about 6–8× a CNN on the same cells (~110–215 GiB per step vs ~13–33).</li>
+          <li>Scatter and gather are memory-bound: slower than dense convs on a GPU.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section id="F">
+    <h2>G · Kernel defined in metres (continuous / point convolution) <span class="tag no">flexible, uneven cost</span></h2>
+    <div class="row">
+      <div class="figcol"><div id="fig-F"></div><div class="hint">Hover over a cell: every cell centre within the radius is a neighbour. Darker = closer, so a larger weight.</div></div>
+      <div class="txtcol">
+        <p>Define the kernel as a function of physical offset in metres. Every cell centre within <i>R</i> metres is a neighbour, weighted by a small network applied to the offset (as in KPConv and continuous convolutions).</p>
+        <p>Radius <i>R</i> = <b id="F-r">3.0</b> m <input type="range" id="F-range" min="1.5" max="8" step="0.5" value="3"></p>
+        <div class="stats" id="F-stats"></div>
+        <h3>Good</h3><ul><li>One rule for any sizes, positions or point clouds.</li></ul>
+        <h3>Catch</h3><ul>
+          <li>The neighbour count swings with cell size: a radius that suits a 4 m cell sweeps in dozens of 1 m cells near the house.</li>
+          <li>Each neighbour pair stores an intermediate tensor, as in a GNN, so memory is at least as high.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section id="flux">
+    <h2>Keeping mass and energy exact where sizes meet</h2>
+    <div class="row">
+      <div class="figcol"><div id="fig-flux"></div></div>
+      <div class="txtcol">
+        <p>The model updates each cell by what flows through its faces: new amount = old amount + inflow − outflow. If every face's flow is counted once, as outflow on one side and inflow on the other, nothing appears or vanishes.</p>
+        <p>Where a 2 m cell meets two 1 m cells, the big cell's single face lines up with two small faces. If each side computes its own flux, they disagree, and the difference leaks.</p>
+        <div class="btns"><button id="flux-own">Each side computes its own</button><button id="flux-reflux" class="on">Refluxing: big face = sum of small faces</button></div>
+        <div class="stats" id="flux-stats"></div>
+        <p class="hint">Refluxing is the standard fix in adaptive-mesh CFD. The pairing of each big face with its small faces is fixed per scene, so it is precomputed alongside the halo map. It applies in the same way to C, D and E.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="compare">
+    <h2>Comparison</h2>
+    <table>
+      <thead><tr><th>Approach</th><th>Toy: values stored</th><th>Toy: neighbour slots per layer</th><th>3D fire scene (estimates)</th><th>Main catch</th></tr></thead>
+      <tbody id="cmp"></tbody>
+    </table>
+    <p class="hint">"Neighbour slots" counts what a layer reads (kernel taps or edges). For C, D and E these are reads only; for F and G every slot also stores a training tensor. The 3D column uses rough per-step training-memory estimates for one scene (128 channels, bf16), not measurements.</p>
+  </section>
+
+  <footer>A 2D toy illustration. The 3D figures are rough estimates to compare approaches, not benchmarks.</footer>
+</main>
+
+<script>
+(() => {
+'use strict';
+const D = 48, SC = 9;                       // domain size (m); pixels per metre in the main figures
+const NS = 'http://www.w3.org/2000/svg';
+const KIND = { same: '#0f9d8a', coarser: '#2f6fed', finer: '#d63384', out: '#8a929c' };
+
+// ---------- the toy grid: blocks of 4x4 cells, cell sizes 4 / 2 / 1 m ----------
+const blocks = [], cells = [];
+function addBlock(x0, y0, s) {
+  const b = { id: blocks.length, x0, y0, s, cells: [] };
+  blocks.push(b);
+  for (let j = 0; j < 4; j++) for (let i = 0; i < 4; i++) {
+    const c = { id: cells.length, x0: x0 + i * s, y0: y0 + j * s, s, b: b.id, i, j };
+    c.cx = c.x0 + s / 2; c.cy = c.y0 + s / 2;
+    cells.push(c); b.cells.push(c);
+  }
+}
+for (let by = 0; by < 3; by++) for (let bx = 0; bx < 3; bx++) if (!(bx === 1 && by === 1)) addBlock(16 * bx, 16 * by, 4);
+addBlock(16, 16, 2); addBlock(24, 16, 2);
+for (const x0 of [16, 20, 24, 28]) for (const y0 of [24, 28]) addBlock(x0, y0, 1);
+
+const own = Array.from({ length: D }, () => new Int32Array(D).fill(-1));
+for (const c of cells) for (let y = c.y0; y < c.y0 + c.s; y++) for (let x = c.x0; x < c.x0 + c.s; x++) own[y][x] = c.id;
+console.assert(own.every(r => r.every(v => v >= 0)), 'grid must tile the domain');
+const cellAt = (x, y) => (x < 0 || y < 0 || x >= D || y >= D) ? null : cells[own[Math.floor(y)][Math.floor(x)]];
+
+function field(x, y) {
+  const fire = Math.exp(-((x - 21) ** 2 + (y - 29) ** 2) / 5);
+  const up = Math.max(0, 29 - y), px = 21 + up * 0.35, w = 1.4 + up * 0.22;
+  const plume = y < 29 ? 0.9 * Math.exp(-((x - px) ** 2) / (2 * w * w)) * Math.exp(-up / 32) : 0;
+  const spot = 0.75 * Math.exp(-((x - 27.5) ** 2 + (y - 30.5) ** 2) / 0.9);
+  return Math.min(1, fire + plume + spot);
+}
+for (const c of cells) {
+  const n = Math.max(4, c.s * 4); let a = 0;
+  for (let p = 0; p < n; p++) for (let q = 0; q < n; q++) a += field(c.x0 + (p + .5) * c.s / n, c.y0 + (q + .5) * c.s / n);
+  c.v = a / (n * n);
+}
+
+// A virtual cell of size s centred at (px, py): where does its value come from?
+function resolveAt(px, py, s) {
+  if (px < 0 || py < 0 || px >= D || py >= D) return { kind: 'out', src: [], v: 0 };
+  const t = cellAt(px, py);
+  if (t.s === s) return { kind: 'same', src: [t], v: t.v };
+  if (t.s > s) return { kind: 'coarser', src: [t], v: t.v };
+  const src = [], seen = new Set();
+  for (let y = py - s / 2 + .5; y < py + s / 2; y++) for (let x = px - s / 2 + .5; x < px + s / 2; x++) {
+    const c = cellAt(x, y); if (c && !seen.has(c.id)) { seen.add(c.id); src.push(c); }
+  }
+  const area = src.reduce((a, c) => a + c.s * c.s, 0);
+  return { kind: 'finer', src, v: src.reduce((a, c) => a + c.v * c.s * c.s, 0) / area };
+}
+// self-check: a 4 m position over the fine region averages 16 cells; a 1 m position in a 4 m cell copies it
+console.assert(resolveAt(18, 26, 4).src.length === 16 && resolveAt(17.5, 33.5, 1).kind === 'coarser', 'resolve rule');
+
+// ---------- drawing helpers ----------
+function el(tag, attrs, parent) {
+  const e = document.createElementNS(NS, tag);
+  for (const k in attrs) e.setAttribute(k, attrs[k]);
+  if (parent) parent.appendChild(e);
+  return e;
+}
+const STOPS = [[0, [22, 20, 40]], [0.2, [70, 30, 95]], [0.45, [170, 50, 70]], [0.7, [235, 125, 40]], [1, [250, 230, 110]]];
+function color(v) {
+  v = Math.max(0, Math.min(1, v));
+  for (let k = 1; k < STOPS.length; k++) if (v <= STOPS[k][0]) {
+    const [a, ca] = STOPS[k - 1], [b, cb] = STOPS[k], t = (v - a) / (b - a);
+    return `rgb(${ca.map((x, i) => Math.round(x + (cb[i] - x) * t)).join(',')})`;
+  }
+  return 'rgb(250,230,110)';
+}
+function makeFig(id, w = D, h = D, sc = SC) {
+  const host = document.getElementById(id);
+  const svg = el('svg', { viewBox: `0 0 ${w * sc} ${h * sc}`, class: 'fig', role: 'img' }, host);
+  return { svg, base: el('g', {}, svg), over: el('g', {}, svg), sc };
+}
+function toUnits(fig, ev) {
+  const r = fig.svg.getBoundingClientRect(), vb = fig.svg.viewBox.baseVal;
+  const t = ev.touches ? ev.touches[0] : ev;
+  return [(t.clientX - r.left) / r.width * vb.width / fig.sc, (t.clientY - r.top) / r.height * vb.height / fig.sc];
+}
+function sq(g, x0, y0, s, sc, attrs) { return el('rect', Object.assign({ x: x0 * sc, y: y0 * sc, width: s * sc, height: s * sc }, attrs), g); }
+// outlined box readable on any fill: white under-stroke, coloured stroke on top
+function mark(g, x0, y0, s, sc, col, opts = {}) {
+  const inset = opts.inset ?? 1.5, w = opts.w ?? 2.5;
+  const a = { x: x0 * sc + inset, y: y0 * sc + inset, width: Math.max(1, s * sc - 2 * inset), height: Math.max(1, s * sc - 2 * inset), fill: opts.fill || 'none' };
+  el('rect', Object.assign({}, a, { stroke: '#fff', 'stroke-width': w + 2, fill: 'none' }), g);
+  el('rect', Object.assign({}, a, { stroke: col, 'stroke-width': w, 'stroke-dasharray': opts.dash || '' }), g);
+}
+function drawCells(g, list, sc, opts = {}) {
+  for (const c of list) sq(g, c.x0, c.y0, c.s, sc, { fill: color(c.v), stroke: opts.grid ?? 'rgba(255,255,255,.35)', 'stroke-width': opts.gw ?? 0.6 });
+}
+function drawBlocks(g, sc, col = 'rgba(255,255,255,.95)', w = 1.6) {
+  for (const b of blocks) sq(g, b.x0, b.y0, 4 * b.s, sc, { fill: 'none', stroke: col, 'stroke-width': w });
+}
+function hover(fig, fn, init) {
+  const go = ev => { const [x, y] = toUnits(fig, ev); if (x >= 0 && y >= 0 && x < fig.svg.viewBox.baseVal.width / fig.sc && y < fig.svg.viewBox.baseVal.height / fig.sc) { fig.over.replaceChildren(); fn(x, y); } };
+  fig.svg.addEventListener('mousemove', go);
+  fig.svg.addEventListener('touchstart', e => { go(e); e.preventDefault(); }, { passive: false });
+  fig.svg.addEventListener('touchmove', e => { go(e); e.preventDefault(); }, { passive: false });
+  fn(...init);
+}
+function stats(id, rows) { document.getElementById(id).innerHTML = rows.map(([k, v]) => `<span>${k}</span><b>${v}</b>`).join(''); }
+const fmt = n => n.toLocaleString('en-US');
+const DEFAULT = [17, 23];      // a 2 m cell with a 4 m neighbour on the left and 1 m cells below
+
+// ---------- setup ----------
+{
+  const fig = makeFig('fig-setup');
+  drawCells(fig.base, cells, SC); drawBlocks(fig.base, SC);
+  const n = s => cells.filter(c => c.s === s).length, nb = s => blocks.filter(b => b.s === s).length;
+  stats('setup-stats', [['4 m cells', `${n(4)} in ${nb(4)} blocks`], ['2 m cells', `${n(2)} in ${nb(2)} blocks`], ['1 m cells', `${n(1)} in ${nb(1)} blocks`], ['Total', `${cells.length} cells, ${blocks.length} blocks`]]);
+  hover(fig, (x, y) => {
+    const c = cellAt(x, y), b = blocks[c.b];
+    mark(fig.over, b.x0, b.y0, 4 * b.s, SC, '#fff', { w: 3, inset: 1 });
+    mark(fig.over, c.x0, c.y0, c.s, SC, '#111', { w: 2.5 });
+    document.getElementById('setup-info').textContent = `Cell ${c.s} m × ${c.s} m, at (${c.i}, ${c.j}) in block ${b.id + 1} (a block of ${4 * b.s} m × ${4 * b.s} m).`;
+  }, DEFAULT);
+}
+
+// ---------- A: finest everywhere ----------
+{
+  const fig = makeFig('fig-A');
+  const px = [];
+  for (let y = 0; y < D; y++) for (let x = 0; x < D; x++) { const c = cells[own[y][x]]; px.push({ x0: x, y0: y, s: 1, v: c.v, copy: c.s > 1 }); }
+  drawCells(fig.base, px, SC, { grid: 'rgba(255,255,255,.28)', gw: 0.5 });
+  const copies = px.filter(p => p.copy).length;
+  stats('A-stats', [['Pixels', `${fmt(px.length)} (${(px.length / cells.length).toFixed(1)}× the real cells)`], ['Copies of a bigger cell', `${fmt(copies)} (${Math.round(100 * copies / px.length)}%)`], ['3D: 0.25 m everywhere', '~168 M cells vs 1–4 M real']]);
+  hover(fig, (x, y) => {
+    const cx = Math.floor(x), cy = Math.floor(y);
+    for (let j = -1; j <= 1; j++) for (let i = -1; i <= 1; i++) if (cx + i >= 0 && cy + j >= 0 && cx + i < D && cy + j < D) mark(fig.over, cx + i, cy + j, 1, SC, '#111', { w: 1.5, inset: 0.5 });
+    mark(fig.over, cx - 1, cy - 1, 3, SC, '#111', { w: 2.5, inset: 0 });
+  }, DEFAULT);
+}
+
+// ---------- B: coarsest everywhere ----------
+{
+  const fig = makeFig('fig-B');
+  const px = [];
+  for (let y = 0; y < D; y += 4) for (let x = 0; x < D; x += 4) px.push({ x0: x, y0: y, s: 4, v: resolveAt(x + 2, y + 2, 4).v });
+  drawCells(fig.base, px, SC, { grid: 'rgba(255,255,255,.4)', gw: 0.8 });
+  const lost = cells.filter(c => c.s < 4).length;
+  stats('B-stats', [['Pixels', `${px.length}`], ['Real cells averaged away', `${lost} of ${cells.length}`]]);
+  hover(fig, (x, y) => {
+    const cx = Math.floor(x / 4) * 4, cy = Math.floor(y / 4) * 4;
+    for (let j = -1; j <= 1; j++) for (let i = -1; i <= 1; i++) mark(fig.over, cx + 4 * i, cy + 4 * j, 4, SC, '#111', { w: 1.5, inset: 0.5 });
+    mark(fig.over, cx - 4, cy - 4, 12, SC, '#111', { w: 2.5, inset: 0 });
+  }, DEFAULT);
+}
+
+// ---------- C: blocks + halo ----------
+function haloOf(b) {
+  const out = [];
+  for (let j = -1; j <= 4; j++) for (let i = -1; i <= 4; i++) {
+    if (i >= 0 && i < 4 && j >= 0 && j < 4) continue;
+    const x0 = b.x0 + i * b.s, y0 = b.y0 + j * b.s;
+    out.push(Object.assign({ i, j, x0, y0, s: b.s }, resolveAt(x0 + b.s / 2, y0 + b.s / 2, b.s)));
+  }
+  return out;
+}
+{
+  const fig = makeFig('fig-C');
+  drawCells(fig.base, cells, SC); drawBlocks(fig.base, SC);
+  const side = el('svg', { viewBox: '0 0 330 160', class: 'side', width: 330, height: 160 }, document.getElementById('C-side'));
+  const haloTotal = blocks.reduce((a, b) => a + haloOf(b).length, 0);
+  const kinds = { same: 0, finer: 0, coarser: 0, out: 0 };
+  blocks.forEach(b => haloOf(b).forEach(h => kinds[h.kind]++));
+  stats('C-stats', [['Real cells stored', `${cells.length}`], ['Halo cells (per layer, then dropped)', `${haloTotal}: ${kinds.same} copy same, ${kinds.finer} average finer, ${kinds.coarser} copy coarser, ${kinds.out} boundary`], ['Conv calls per layer', '1 (all blocks are 4×4, so one batch of 18)'], ['3D gas, one step', '~13–33 GiB (estimate)']]);
+  hover(fig, (x, y) => {
+    const c = cellAt(x, y), b = blocks[c.b], halo = haloOf(b);
+    for (const h of halo) for (const s of h.src) sq(fig.over, s.x0, s.y0, s.s, SC, { fill: KIND[h.kind], 'fill-opacity': 0.18, stroke: 'none' });
+    for (const h of halo) mark(fig.over, h.x0, h.y0, h.s, SC, KIND[h.kind], { w: 2, dash: '4 2', inset: 1 });
+    mark(fig.over, b.x0, b.y0, 4 * b.s, SC, '#fff', { w: 3, inset: 0 });
+    mark(fig.over, c.x0 - c.s, c.y0 - c.s, 3 * c.s, SC, '#111', { w: 2.5, inset: 0 });
+    // side view: the block + halo as a plain 6x6 image
+    side.replaceChildren();
+    const u = 22, ox = 8, oy = 8;
+    const grid = new Map(halo.map(h => [`${h.i},${h.j}`, h]));
+    for (let j = -1; j <= 4; j++) for (let i = -1; i <= 4; i++) {
+      const inner = i >= 0 && i < 4 && j >= 0 && j < 4;
+      const v = inner ? b.cells[j * 4 + i].v : grid.get(`${i},${j}`).v;
+      const kind = inner ? null : grid.get(`${i},${j}`).kind;
+      const X = ox + (i + 1) * u, Y = oy + (j + 1) * u;
+      el('rect', { x: X, y: Y, width: u, height: u, fill: kind === 'out' ? '#eceef0' : color(v), stroke: '#fff', 'stroke-width': 1 }, side);
+      if (kind) { el('rect', { x: X + 1.5, y: Y + 1.5, width: u - 3, height: u - 3, fill: 'none', stroke: '#fff', 'stroke-width': 4 }, side); el('rect', { x: X + 1.5, y: Y + 1.5, width: u - 3, height: u - 3, fill: 'none', stroke: KIND[kind], 'stroke-width': 2.2, 'stroke-dasharray': '4 2' }, side); }
+      if (i === c.i && j === c.j) el('rect', { x: X - u, y: Y - u, width: 3 * u, height: 3 * u, fill: 'none', stroke: '#111', 'stroke-width': 2.5 }, side);
+    }
+    const t = el('text', { x: 158, y: 30, 'font-size': 13, fill: '#1f2328' }, side); t.textContent = `Block ${b.id + 1} as a tensor`;
+    [['6 × 6 values (4 × 4 + halo)', 52], [`extra channel: cell size = ${b.s} m`, 72], ['same conv weights for', 100], ['every block, every size', 118]].forEach(([s, yy]) => { const e = el('text', { x: 158, y: yy, 'font-size': 12, fill: '#5b6470' }, side); e.textContent = s; });
+  }, DEFAULT);
+}
+
+// ---------- D: one image per level ----------
+{
+  const fig = makeFig('fig-G');
+  drawCells(fig.base, cells, SC);
+  const boxes = { 4: [0, 0, 48, 48], 2: [16, 16, 32, 24], 1: [16, 24, 32, 32] };
+  const shadow = cells.filter(c => c.s < 4).length;
+  for (const [s, [x0, y0, x1, y1]] of Object.entries(boxes)) {
+    const col = s === '4' ? '#ffffff' : s === '2' ? KIND.coarser : KIND.finer;
+    el('rect', { x: x0 * SC + 1.5, y: y0 * SC + 1.5, width: (x1 - x0) * SC - 3, height: (y1 - y0) * SC - 3, fill: 'none', stroke: '#fff', 'stroke-width': 5 }, fig.base);
+    el('rect', { x: x0 * SC + 1.5, y: y0 * SC + 1.5, width: (x1 - x0) * SC - 3, height: (y1 - y0) * SC - 3, fill: 'none', stroke: col === '#ffffff' ? '#111' : col, 'stroke-width': 2.5 }, fig.base);
+  }
+  const pat = el('pattern', { id: 'hatch', width: 6, height: 6, patternUnits: 'userSpaceOnUse', patternTransform: 'rotate(45)' }, el('defs', {}, fig.svg));
+  el('line', { x1: 0, y1: 0, x2: 0, y2: 6, stroke: 'rgba(255,255,255,.55)', 'stroke-width': 2 }, pat);
+  sq(fig.base, 16, 16, 16, SC, { fill: 'url(#hatch)' });
+  const ghosts = s => { const [x0, y0, x1, y1] = boxes[s]; const w = (x1 - x0) / s, h = (y1 - y0) / s; return 2 * (w + h) + 4; };
+  stats('G-stats', [['Images (one per level)', '3: 12×12 at 4 m, 8×4 at 2 m, 16×8 at 1 m'], ['Values stored', `${cells.length} real + ${144 - cells.filter(c => c.s === 4).length} shadow 4 m cells`], ['Ghost cells per layer', `${ghosts(2) + ghosts(1)} (vs ${blocks.reduce((a, b) => a + haloOf(b).length, 0)} halo cells in C)`], ['Conv calls per layer', '3 (one per level)']]);
+  // the three level images, drawn in index space
+  const host = document.getElementById('G-levels');
+  const lv = (s, title) => {
+    const [x0, y0, x1, y1] = boxes[s], w = (x1 - x0) / s, h = (y1 - y0) / s, u = s === 1 ? 13 : s === 2 ? 20 : 14;
+    const ring = s === 4 ? 0 : 1;
+    const fg = document.createElement('figure'); host.appendChild(fg);
+    const sv = el('svg', { viewBox: `0 0 ${(w + 2 * ring) * u} ${(h + 2 * ring) * u}`, class: 'side', width: (w + 2 * ring) * u, height: (h + 2 * ring) * u }, fg);
+    for (let j = -ring; j < h + ring; j++) for (let i = -ring; i < w + ring; i++) {
+      const px = x0 + (i + .5) * s, py = y0 + (j + .5) * s, r = resolveAt(px, py, s);
+      const ghost = i < 0 || j < 0 || i >= w || j >= h;
+      const X = (i + ring) * u, Y = (j + ring) * u;
+      el('rect', { x: X, y: Y, width: u, height: u, fill: r.kind === 'out' ? '#eceef0' : color(r.v), stroke: '#fff', 'stroke-width': .8 }, sv);
+      if (ghost && r.kind !== 'out') el('rect', { x: X + 1.5, y: Y + 1.5, width: u - 3, height: u - 3, fill: 'none', stroke: KIND[r.kind], 'stroke-width': 2, 'stroke-dasharray': '3 2' }, sv);
+      if (s === 4 && r.kind === 'finer') el('rect', { x: X, y: Y, width: u, height: u, fill: 'url(#hatch)' }, sv);
+    }
+    const cap = document.createElement('figcaption'); cap.textContent = title; fg.appendChild(cap);
+  };
+  lv(4, '4 m level: the whole domain, 12 × 12 (hatched = shadow cells)');
+  lv(2, '2 m level: 8 × 4 + ghost ring');
+  lv(1, '1 m level: 16 × 8 + ghost ring');
+  hover(fig, (x, y) => {
+    const c = cellAt(x, y);
+    mark(fig.over, c.x0 - c.s, c.y0 - c.s, 3 * c.s, SC, '#111', { w: 2.5, inset: 0 });
+  }, DEFAULT);
+}
+
+// ---------- E: per-cell lookup ----------
+{
+  const fig = makeFig('fig-E');
+  drawCells(fig.base, cells, SC); drawBlocks(fig.base, SC, 'rgba(255,255,255,.5)', 1);
+  let mixed = 0;
+  for (const c of cells) { for (let j = -1; j <= 1; j++) for (let i = -1; i <= 1; i++) if (resolveAt(c.cx + i * c.s, c.cy + j * c.s, c.s).kind !== 'same') { mixed++; i = j = 2; } }
+  const info = document.createElement('p'); info.className = 'hint'; document.getElementById('E-stats').after(info);
+  stats('E-stats', [['Values stored', `${cells.length} (no halo)`], ['Kernel reads per layer', `${cells.length * 9}`], ['Cells whose kernel crosses a size change', `${mixed} of ${cells.length}`]]);
+  hover(fig, (x, y) => {
+    const c = cellAt(x, y); const parts = { same: 0, finer: 0, coarser: 0, out: 0 };
+    for (let j = -1; j <= 1; j++) for (let i = -1; i <= 1; i++) {
+      if (!i && !j) continue;
+      const r = resolveAt(c.cx + i * c.s, c.cy + j * c.s, c.s); parts[r.kind]++;
+      for (const s of r.src) sq(fig.over, s.x0, s.y0, s.s, SC, { fill: KIND[r.kind], 'fill-opacity': 0.22, stroke: 'none' });
+      mark(fig.over, c.x0 + i * c.s, c.y0 + j * c.s, c.s, SC, KIND[r.kind], { w: 2.2, inset: 1.2 });
+    }
+    mark(fig.over, c.x0, c.y0, c.s, SC, '#111', { w: 2.5, inset: 1.2 });
+    info.textContent = `This ${c.s} m cell's 8 neighbours: ${parts.same} same size, ${parts.finer} averaged from finer, ${parts.coarser} copied from coarser, ${parts.out} outside.`;
+  }, DEFAULT);
+}
+
+// ---------- F: graph ----------
+const edges = [];
+for (let a = 0; a < cells.length; a++) for (let b = a + 1; b < cells.length; b++) {
+  const p = cells[a], q = cells[b];
+  const ox = Math.min(p.x0 + p.s, q.x0 + q.s) - Math.max(p.x0, q.x0), oy = Math.min(p.y0 + p.s, q.y0 + q.s) - Math.max(p.y0, q.y0);
+  if ((ox > 0 && oy === 0) || (oy > 0 && ox === 0)) edges.push([a, b]);
+}
+{
+  const fig = makeFig('fig-D');
+  drawCells(fig.base, cells, SC, { grid: 'rgba(255,255,255,.25)' });
+  el('rect', { x: 0, y: 0, width: D * SC, height: D * SC, fill: 'rgba(255,255,255,.35)' }, fig.base);
+  for (const [a, b] of edges) el('line', { x1: cells[a].cx * SC, y1: cells[a].cy * SC, x2: cells[b].cx * SC, y2: cells[b].cy * SC, stroke: 'rgba(20,24,30,.45)', 'stroke-width': .8 }, fig.base);
+  for (const c of cells) el('circle', { cx: c.cx * SC, cy: c.cy * SC, r: c.s === 1 ? 1.6 : 2.4, fill: '#1f2328' }, fig.base);
+  const deg = cells.map(() => 0); edges.forEach(([a, b]) => { deg[a]++; deg[b]++; });
+  const info = document.createElement('p'); info.className = 'hint'; document.getElementById('D-stats').after(info);
+  stats('D-stats', [['Nodes', `${cells.length}`], ['Edges (each direction stores a message)', `${edges.length} × 2 = ${edges.length * 2}`], ['Neighbours per cell', `${Math.min(...deg)}–${Math.max(...deg)}`], ['3D gas, one step', '~110–215 GiB (estimate)']]);
+  hover(fig, (x, y) => {
+    const c = cellAt(x, y); let n = 0;
+    for (const [a, b] of edges) if (a === c.id || b === c.id) {
+      const o = cells[a === c.id ? b : a]; n++;
+      el('line', { x1: c.cx * SC, y1: c.cy * SC, x2: o.cx * SC, y2: o.cy * SC, stroke: '#fff', 'stroke-width': 5 }, fig.over);
+      el('line', { x1: c.cx * SC, y1: c.cy * SC, x2: o.cx * SC, y2: o.cy * SC, stroke: KIND[o.s === c.s ? 'same' : o.s < c.s ? 'finer' : 'coarser'], 'stroke-width': 2.5 }, fig.over);
+    }
+    el('circle', { cx: c.cx * SC, cy: c.cy * SC, r: 5, fill: '#111', stroke: '#fff', 'stroke-width': 2 }, fig.over);
+    info.textContent = `This ${c.s} m cell has ${n} edges (teal = same size, pink = smaller neighbour, blue = bigger neighbour).`;
+  }, DEFAULT);
+}
+
+// ---------- G: radius in metres ----------
+{
+  const fig = makeFig('fig-F');
+  drawCells(fig.base, cells, SC);
+  let R = 3, last = DEFAULT;
+  const info = document.createElement('p'); info.className = 'hint'; document.getElementById('F-stats').after(info);
+  const nbrs = (c, R) => cells.filter(o => o !== c && Math.hypot(o.cx - c.cx, o.cy - c.cy) <= R);
+  const refresh = () => {
+    const counts = cells.map(c => nbrs(c, R).length).sort((a, b) => a - b);
+    const total = counts.reduce((a, b) => a + b, 0);
+    stats('F-stats', [['Neighbours per cell', `${counts[0]}–${counts[counts.length - 1]} (median ${counts[counts.length >> 1]})`], ['Neighbour pairs (each stores a tensor)', `${fmt(total)}`]]);
+  };
+  const draw = (x, y) => {
+    last = [x, y]; fig.over.replaceChildren();
+    const c = cellAt(x, y), ns = nbrs(c, R);
+    for (const o of ns) { const d = Math.hypot(o.cx - c.cx, o.cy - c.cy); el('circle', { cx: o.cx * SC, cy: o.cy * SC, r: o.s === 1 ? 2.2 : 3.2, fill: '#fff', stroke: '#111', 'stroke-width': 0.6 + 2.4 * (1 - d / R) }, fig.over); }
+    el('circle', { cx: c.cx * SC, cy: c.cy * SC, r: R * SC, fill: 'rgba(255,255,255,.12)', stroke: '#fff', 'stroke-width': 3 }, fig.over);
+    el('circle', { cx: c.cx * SC, cy: c.cy * SC, r: R * SC, fill: 'none', stroke: '#111', 'stroke-width': 1.5, 'stroke-dasharray': '5 3' }, fig.over);
+    mark(fig.over, c.x0, c.y0, c.s, SC, '#111', { w: 2.5, inset: 1 });
+    info.textContent = `This ${c.s} m cell has ${ns.length} neighbours within ${R} m.`;
+  };
+  hover(fig, draw, DEFAULT);
+  document.getElementById('F-range').addEventListener('input', e => { R = +e.target.value; document.getElementById('F-r').textContent = R.toFixed(1); refresh(); draw(...last); });
+  refresh();
+}
+
+// ---------- flux / refluxing ----------
+{
+  const u = 90, svg = el('svg', { viewBox: `0 0 ${4.2 * u} ${2.6 * u}`, class: 'side', width: 4.2 * u }, document.getElementById('fig-flux'));
+  const g = el('g', { transform: `translate(${0.3 * u},${0.3 * u})` }, svg);
+  const f1 = 0.30, f2 = 0.50, own = 0.70;
+  let mode = 'reflux';
+  const arrow = (x, y, len, col, label, below) => {
+    el('line', { x1: x, y1: y, x2: x + len, y2: y, stroke: col, 'stroke-width': 4 }, g);
+    el('path', { d: `M${x + len} ${y - 7} L${x + len + 12} ${y} L${x + len} ${y + 7} Z`, fill: col }, g);
+    const t = el('text', { x: x + len / 2, y: below ? y + 20 : y - 9, 'text-anchor': 'middle', 'font-size': 13, 'font-weight': 600, fill: col }, g); t.textContent = label;
+  };
+  const draw = () => {
+    g.replaceChildren();
+    el('rect', { x: 0, y: 0, width: 2 * u, height: 2 * u, fill: color(0.75), stroke: '#fff', 'stroke-width': 2 }, g);
+    el('rect', { x: 2 * u, y: 0, width: u, height: u, fill: color(0.45), stroke: '#fff', 'stroke-width': 2 }, g);
+    el('rect', { x: 2 * u, y: u, width: u, height: u, fill: color(0.35), stroke: '#fff', 'stroke-width': 2 }, g);
+    [['2 m cell', u, 2 * u - 10], ['1 m', 2.5 * u, u - 10], ['1 m', 2.5 * u, 2 * u - 10]].forEach(([s, x, y]) => { const t = el('text', { x, y, 'text-anchor': 'middle', 'font-size': 12, fill: '#fff' }, g); t.textContent = s; });
+    arrow(2 * u - 4, 0.5 * u, 30, KIND.finer, `${f1.toFixed(2)}`);
+    arrow(2 * u - 4, 1.5 * u, 30, KIND.finer, `${f2.toFixed(2)}`, true);
+    const big = mode === 'reflux' ? f1 + f2 : own;
+    arrow(1.2 * u, u, 0.55 * u, KIND.coarser, `out ${big.toFixed(2)}`);
+  };
+  const upd = () => {
+    const big = mode === 'reflux' ? f1 + f2 : own, leak = f1 + f2 - big;
+    stats('flux-stats', [['Leaves the 2 m cell', big.toFixed(2)], ['Enters the two 1 m cells', `${f1.toFixed(2)} + ${f2.toFixed(2)} = ${(f1 + f2).toFixed(2)}`], [mode === 'reflux' ? 'Mismatch' : 'Created from nothing', mode === 'reflux' ? '0 (exact)' : `${leak.toFixed(2)} per step`]]);
+    document.getElementById('flux-own').classList.toggle('on', mode === 'own');
+    document.getElementById('flux-reflux').classList.toggle('on', mode === 'reflux');
+    draw();
+  };
+  document.getElementById('flux-own').onclick = () => { mode = 'own'; upd(); };
+  document.getElementById('flux-reflux').onclick = () => { mode = 'reflux'; upd(); };
+  upd();
+}
+
+// ---------- comparison ----------
+{
+  const halo = blocks.reduce((a, b) => a + haloOf(b).length, 0);
+  const fCount = cells.reduce((a, c) => a + cells.filter(o => o !== c && Math.hypot(o.cx - c.cx, o.cy - c.cy) <= 3).length, 0);
+  const rows = [
+    ['A · Finest everywhere', `${fmt(D * D)}`, `${fmt(D * D * 9)}`, '~168 M cells; ~1,300 GiB/step', 'mostly copies; doesn\'t fit'],
+    ['B · Coarsest everywhere', '144', `${144 * 9}`, '~0.3 M cells; small', 'loses the house-scale detail'],
+    ['C · Blocks + halo', `${cells.length} (+${halo} halo)`, `${fmt(cells.length * 9)}`, '1–4 M cells; ~13–33 GiB/step (gas)', 'halo gather map is custom code'],
+    ['D · One image per level', `${cells.length} (+${144 - 128} shadow)`, `~${fmt(cells.length * 9)}`, 'like C, plus bounding-box padding', 'padding if a level isn\'t box-shaped'],
+    ['E · Per-cell lookup', `${cells.length}`, `${fmt(cells.length * 9)}`, 'like C', 'cross-size lookups are ours to write; gathers are slower'],
+    ['F · Graph (GNN)', `${cells.length}`, `${fmt(edges.length * 2)} edges`, '1–4 M cells; ~110–215 GiB/step (gas)', 'a tensor per edge per layer'],
+    ['G · Radius in metres', `${cells.length}`, `${fmt(fCount)} pairs (R = 3 m)`, 'at least as much as F', 'neighbour count swings with cell size'],
+  ];
+  document.getElementById('cmp').innerHTML = rows.map(r => `<tr><td>${r[0]}</td><td class="num">${r[1]}</td><td class="num">${r[2]}</td><td>${r[3]}</td><td>${r[4]}</td></tr>`).join('');
+}
+})();
+</script>
+</body>
+</html>
